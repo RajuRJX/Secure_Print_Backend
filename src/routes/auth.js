@@ -158,7 +158,7 @@ router.get('/profile', auth, async (req, res, next) => {
 });
 
 // Get cyber center QR code URL
-router.get('/cyber-center-qr/:id', auth, async (req, res, next) => {
+router.get('/cyber-center-qr/:id', async (req, res, next) => {
   try {
     const cyberCenter = await db('users')
       .where({ 
@@ -172,8 +172,8 @@ router.get('/cyber-center-qr/:id', auth, async (req, res, next) => {
       throw new BadRequestError('Cyber center not found');
     }
 
-    // Generate QR code URL
-    const qrCodeUrl = `${process.env.FRONTEND_URL}/upload/${cyberCenter.id}`;
+    // Generate QR code URL using the deployed frontend URL
+    const qrCodeUrl = `https://secure-print-frontend.onrender.com/upload/${cyberCenter.id}`;
     
     res.json({ 
       qrCodeUrl,
