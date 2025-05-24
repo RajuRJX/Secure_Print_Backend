@@ -28,6 +28,9 @@ app.use(limiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
