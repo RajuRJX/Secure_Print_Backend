@@ -251,21 +251,23 @@ router.delete('/:id', auth, async (req, res, next) => {
   }
 });
 
-// Direct upload via QR code
-router.post('/direct-upload', upload.single('document'), async (req, res) => {
+// Direct upload via QR code (no auth required)
+router.post('/direct-upload/:centerId', upload.single('document'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No file uploaded' });
     }
 
-    const { cyber_center_id, name, phone_number } = req.body;
-    if (!cyber_center_id || !name || !phone_number) {
-      return res.status(400).json({ message: 'Cyber center ID, name, and phone number are required' });
+    const { centerId } = req.params;
+    const { name, phone_number } = req.body;
+
+    if (!name || !phone_number) {
+      return res.status(400).json({ message: 'Name and phone number are required' });
     }
 
     // Check if cyber center exists
     const cyberCenter = await db('users')
-      .where({ id: cyber_center_id, is_cyber_center: true })
+      .where({ id: centerId, is_cyber_center: true })
       .first();
     
     if (!cyberCenter) {
@@ -284,33 +286,15 @@ router.post('/direct-upload', upload.single('document'), async (req, res) => {
       ContentType: req.file.mimetype
     }));
 
-    // Create temporary user or find existing user by phone number
-    let user = await db('users').where({ phone_number }).first();
-    
-    if (!user) {
-      // Generate a random password for temporary user
-      const tempPassword = Math.random().toString(36).slice(-8);
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash(tempPassword, salt);
-
-      // Create temporary user
-      [user] = await db('users').insert({
-        name,
-        phone_number,
-        is_cyber_center: false,
-        email: `${phone_number}@temp.com`, // Temporary email
-        password: hashedPassword
-      }).returning(['id']);
-    }
-
     // Save document info to database
     const [document] = await db('documents').insert({
-      user_id: user.id,
-      cyber_center_id,
+      cyber_center_id: centerId,
       file_name: req.file.originalname,
       s3_key: key,
       otp,
-      status: 'pending'
+      status: 'pending',
+      uploaded_by_name: name,
+      uploaded_by_phone: phone_number
     }).returning('*');
 
     // Send OTP to the user who uploaded the document

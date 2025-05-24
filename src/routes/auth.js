@@ -118,7 +118,7 @@ router.post('/login',
 );
 
 // Get cyber centers
-router.get('/cyber-centers', auth, async (req, res, next) => {
+router.get('/cyber-centers', async (req, res, next) => {
   try {
     console.log('Fetching cyber centers...');
     const centers = await db('users')
