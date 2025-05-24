@@ -160,6 +160,8 @@ router.get('/profile', auth, async (req, res, next) => {
 // Get cyber center QR code URL
 router.get('/cyber-center-qr/:id', async (req, res, next) => {
   try {
+    console.log('Fetching cyber center info for ID:', req.params.id);
+    
     const cyberCenter = await db('users')
       .where({ 
         id: req.params.id,
@@ -169,8 +171,11 @@ router.get('/cyber-center-qr/:id', async (req, res, next) => {
       .first();
 
     if (!cyberCenter) {
+      console.log('Cyber center not found for ID:', req.params.id);
       throw new BadRequestError('Cyber center not found');
     }
+
+    console.log('Found cyber center:', cyberCenter);
 
     // Generate QR code URL using the deployed frontend URL
     const qrCodeUrl = `https://secure-print-frontend.onrender.com/upload/${cyberCenter.id}`;
@@ -181,6 +186,7 @@ router.get('/cyber-center-qr/:id', async (req, res, next) => {
       centerAddress: cyberCenter.center_address
     });
   } catch (error) {
+    console.error('Error in cyber-center-qr route:', error);
     next(error);
   }
 });
