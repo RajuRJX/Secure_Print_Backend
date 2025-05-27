@@ -4,14 +4,16 @@ const { auth, isCyberCenter } = require('../middleware/auth');
 const { validateRequest } = require('../middleware/validateRequest');
 const { BadRequestError } = require('../utils/errors');
 const db = require('../db');
-const { S3Client, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, DeleteObjectCommand, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const multer = require('multer');
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
+const os = require('os');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
+const { decrypt } = require('../utils/encryption');
 
 const router = express.Router();
 
@@ -37,44 +39,109 @@ const upload = multer({
   })
 });
 
+// Get system temp directory
+const getTempDir = () => {
+  return os.tmpdir();
+};
+
+// Ensure temp directory exists
+const ensureTempDir = async () => {
+  const tempDir = getTempDir();
+  try {
+    await fs.access(tempDir);
+  } catch {
+    await fs.mkdir(tempDir, { recursive: true });
+  }
+  return tempDir;
+};
+
+// Clean up old temporary files
+const cleanupTempFiles = async () => {
+  const tempDir = getTempDir();
+  try {
+    const files = await fs.readdir(tempDir);
+    const now = Date.now();
+    for (const file of files) {
+      if (file.startsWith('secure-print-')) {
+        const filePath = path.join(tempDir, file);
+        try {
+          const stats = await fs.stat(filePath);
+          // Delete files older than 5 minutes
+          if (now - stats.mtimeMs > 300000) {
+            await fs.unlink(filePath);
+          }
+        } catch (error) {
+          console.error(`Error cleaning up file ${file}:`, error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error cleaning up temp directory:', error);
+  }
+};
+
+// Run cleanup every 5 minutes
+setInterval(cleanupTempFiles, 300000);
+
 router.post('/print', auth, isCyberCenter, async (req, res, next) => {
-    try {
-      const { document_id, otp } = req.body;
-  
-      const document = await db('documents')
-        .where({ id: document_id })
-        .first();
-  
-      if (!document) {
-        throw new BadRequestError('Document not found');
-      }
-  
-      if (document.otp !== otp) {
-        throw new BadRequestError('Invalid OTP');
-      }
-  
-      // Fetch encrypted file from S3
-      const command = new GetObjectCommand({
-        Bucket: process.env.AWS_BUCKET_NAME,
-        Key: document.s3_key
+  let tempFilePath;
+  try {
+    const { document_id, otp } = req.body;
+
+    const document = await db('documents')
+      .where({ id: document_id })
+      .first();
+
+    if (!document) {
+      throw new BadRequestError('Document not found');
+    }
+
+    if (document.otp !== otp) {
+      throw new BadRequestError('Invalid OTP');
+    }
+
+    // Fetch encrypted file from S3
+    const command = new GetObjectCommand({
+      Bucket: process.env.AWS_BUCKET_NAME,
+      Key: document.s3_key
+    });
+
+    const response = await s3Client.send(command);
+    const encryptedData = await response.Body.transformToByteArray();
+    
+    // Decrypt the file
+    const decryptedData = decrypt(Buffer.from(encryptedData), document.encryption_key);
+
+    // Create a temporary file with decrypted content
+    const tempDir = await ensureTempDir();
+    tempFilePath = path.join(tempDir, `secure-print-${Date.now()}-${document.file_name}`);
+    await fs.writeFile(tempFilePath, decryptedData);
+
+    // Update document status
+    await db('documents')
+      .where({ id: document_id })
+      .update({
+        status: 'printed',
+        printed_at: new Date()
       });
 
-      const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 }); // 5 minutes
+    // Generate signed URL for the decrypted file
+    const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 }); // 5 minutes
 
-      // Update document status
-      await db('documents')
-        .where({ id: document_id })
-        .update({
-          status: 'printed',
-          printed_at: new Date()
-        });
-
-      res.json({ signedUrl });
-    } catch (error) {
-      next(error);
+    res.json({ signedUrl });
+  } catch (error) {
+    next(error);
+  } finally {
+    // Clean up temporary file if it exists
+    if (tempFilePath) {
+      try {
+        await fs.unlink(tempFilePath);
+      } catch (error) {
+        console.error('Error cleaning up temporary file:', error);
+      }
     }
   }
-);
+});
 
 // Verify OTP and get print URL
 router.post('/verify',
@@ -86,6 +153,7 @@ router.post('/verify',
   ],
   validateRequest,
   async (req, res, next) => {
+    let tempFilePath;
     try {
       const { document_id, otp } = req.body;
 
@@ -107,13 +175,39 @@ router.post('/verify',
         throw new BadRequestError('Invalid OTP');
       }
 
-      // Generate signed URL for printing
+      // Fetch encrypted file from S3
       const command = new GetObjectCommand({
         Bucket: process.env.AWS_BUCKET_NAME,
         Key: document.s3_key
       });
 
-      const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 }); // 5 minutes
+      const response = await s3Client.send(command);
+      const encryptedData = await response.Body.transformToByteArray();
+      
+      // Decrypt the file
+      const decryptedData = decrypt(Buffer.from(encryptedData), document.encryption_key);
+
+      // Create a temporary file with decrypted content
+      const tempDir = await ensureTempDir();
+      tempFilePath = path.join(tempDir, `secure-print-${Date.now()}-${document.file_name}`);
+      await fs.writeFile(tempFilePath, decryptedData);
+
+      // Upload decrypted file to S3 with a temporary key
+      const tempKey = `temp/${Date.now()}-${document.file_name}`;
+      await s3Client.send(new PutObjectCommand({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Key: tempKey,
+        Body: decryptedData,
+        ContentType: document.file_name.endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      }));
+
+      // Generate signed URL for the decrypted file
+      const tempCommand = new GetObjectCommand({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Key: tempKey
+      });
+
+      const signedUrl = await getSignedUrl(s3Client, tempCommand, { expiresIn: 300 }); // 5 minutes
 
       // Update document status
       await db('documents')
@@ -125,9 +219,35 @@ router.post('/verify',
       // Instead of sending the signed URL directly, send the print service URL
       const printServiceUrl = `${process.env.PRINT_SERVICE_URL}/print?url=${encodeURIComponent(signedUrl)}`;
       res.json({ printServiceUrl });
+
+      // Schedule cleanup of temporary file and S3 object
+      setTimeout(async () => {
+        try {
+          // Delete temporary file
+          if (tempFilePath) {
+            await fs.unlink(tempFilePath);
+          }
+          // Delete temporary S3 object
+          await s3Client.send(new DeleteObjectCommand({
+            Bucket: process.env.AWS_BUCKET_NAME,
+            Key: tempKey
+          }));
+        } catch (error) {
+          console.error('Error cleaning up temporary files:', error);
+        }
+      }, 300000); // 5 minutes
     } catch (error) {
       console.error('Print verification error:', error);
       next(error);
+    } finally {
+      // Clean up temporary file if it exists
+      if (tempFilePath) {
+        try {
+          await fs.unlink(tempFilePath);
+        } catch (error) {
+          console.error('Error cleaning up temporary file:', error);
+        }
+      }
     }
   }
 );

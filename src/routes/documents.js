@@ -1,6 +1,6 @@
 const express = require('express');
 const multer = require('multer');
-const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { v4: uuidv4 } = require('uuid');
 const { auth } = require('../middleware/auth');
@@ -8,6 +8,8 @@ const { BadRequestError } = require('../utils/errors');
 const db = require('../db');
 const twilio = require('twilio');
 const bcrypt = require('bcrypt');
+const { generateKey, encrypt, decrypt } = require('../utils/encryption');
+const fs = require('fs');
 
 // Initialize Twilio client
 const twilioClient = twilio(
@@ -71,12 +73,16 @@ router.post('/upload', auth, upload.single('document'), async (req, res) => {
     // Generate OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Upload to S3
+    // Generate encryption key and encrypt file
+    const encryptionKey = generateKey();
+    const encryptedFile = encrypt(req.file.buffer, encryptionKey);
+
+    // Upload encrypted file to S3
     const key = `documents/${Date.now()}-${req.file.originalname}`;
     await s3Client.send(new PutObjectCommand({
       Bucket: process.env.AWS_BUCKET_NAME,
       Key: key,
-      Body: req.file.buffer,
+      Body: encryptedFile,
       ContentType: req.file.mimetype
     }));
 
@@ -87,7 +93,8 @@ router.post('/upload', auth, upload.single('document'), async (req, res) => {
       file_name: req.file.originalname,
       s3_key: key,
       otp,
-      status: 'pending'
+      status: 'pending',
+      encryption_key: encryptionKey
     }).returning('*');
 
     // Send OTP to the user who uploaded the document
@@ -160,6 +167,7 @@ router.get('/center-documents', auth, async (req, res) => {
 
 // Verify OTP and get document
 router.post('/verify-otp', auth, async (req, res) => {
+  let tempFilePath;
   try {
     const { document_id, otp } = req.body;
 
@@ -184,12 +192,23 @@ router.post('/verify-otp', auth, async (req, res) => {
       .where({ id: document_id })
       .update({ status: 'printed' });
 
-    // Get signed URL for document
+    // Get encrypted file from S3
     const command = new GetObjectCommand({
       Bucket: process.env.AWS_BUCKET_NAME,
       Key: document.s3_key
     });
 
+    const response = await s3Client.send(command);
+    const encryptedData = await response.Body.transformToByteArray();
+    
+    // Decrypt the file
+    const decryptedData = decrypt(Buffer.from(encryptedData), document.encryption_key);
+
+    // Create a temporary file with decrypted content
+    tempFilePath = `/tmp/${document.file_name}`;
+    await fs.writeFile(tempFilePath, decryptedData);
+
+    // Generate signed URL for the decrypted file
     const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
 
     res.json({ 
@@ -199,6 +218,15 @@ router.post('/verify-otp', auth, async (req, res) => {
   } catch (error) {
     console.error('Verify OTP error:', error);
     res.status(500).json({ message: 'Server error' });
+  } finally {
+    // Clean up temporary file if it exists
+    if (tempFilePath) {
+      try {
+        await fs.unlink(tempFilePath);
+      } catch (error) {
+        console.error('Error cleaning up temporary file:', error);
+      }
+    }
   }
 });
 
@@ -277,12 +305,16 @@ router.post('/direct-upload/:centerId', upload.single('document'), async (req, r
     // Generate OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Upload to S3
+    // Generate encryption key and encrypt file
+    const encryptionKey = generateKey();
+    const encryptedFile = encrypt(req.file.buffer, encryptionKey);
+
+    // Upload encrypted file to S3
     const key = `documents/${Date.now()}-${req.file.originalname}`;
     await s3Client.send(new PutObjectCommand({
       Bucket: process.env.AWS_BUCKET_NAME,
       Key: key,
-      Body: req.file.buffer,
+      Body: encryptedFile,
       ContentType: req.file.mimetype
     }));
 
@@ -294,7 +326,8 @@ router.post('/direct-upload/:centerId', upload.single('document'), async (req, r
       otp,
       status: 'pending',
       uploaded_by_name: name,
-      uploaded_by_phone: phone_number
+      uploaded_by_phone: phone_number,
+      encryption_key: encryptionKey
     }).returning('*');
 
     // Send OTP to the user who uploaded the document

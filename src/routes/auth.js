@@ -162,6 +162,16 @@ router.get('/cyber-center-qr/:id', async (req, res, next) => {
   try {
     console.log('Fetching cyber center info for ID:', req.params.id);
     
+    // Log the database query
+    const query = db('users')
+      .where({ 
+        id: req.params.id,
+        is_cyber_center: true 
+      })
+      .select('id', 'center_name', 'center_address')
+      .toString();
+    console.log('Database query:', query);
+    
     const cyberCenter = await db('users')
       .where({ 
         id: req.params.id,
@@ -172,6 +182,11 @@ router.get('/cyber-center-qr/:id', async (req, res, next) => {
 
     if (!cyberCenter) {
       console.log('Cyber center not found for ID:', req.params.id);
+      // Log all cyber centers for debugging
+      const allCenters = await db('users')
+        .where({ is_cyber_center: true })
+        .select('id', 'center_name', 'center_address');
+      console.log('All cyber centers in database:', allCenters);
       throw new BadRequestError('Cyber center not found');
     }
 
@@ -179,6 +194,7 @@ router.get('/cyber-center-qr/:id', async (req, res, next) => {
 
     // Generate QR code URL using the deployed frontend URL
     const qrCodeUrl = `https://secure-print-frontend.onrender.com/upload/${cyberCenter.id}`;
+    console.log('Generated QR code URL:', qrCodeUrl);
     
     res.json({ 
       qrCodeUrl,
