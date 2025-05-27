@@ -216,9 +216,12 @@ router.post('/verify',
           status: 'printed'
         });
 
-      // Instead of sending the signed URL directly, send the print service URL
-      const printServiceUrl = `${process.env.PRINT_SERVICE_URL}/print?url=${encodeURIComponent(signedUrl)}`;
-      res.json({ printServiceUrl });
+      // Construct print service URL with proper encoding
+      const printServiceUrl = new URL('/print', process.env.PRINT_SERVICE_URL);
+      printServiceUrl.searchParams.set('url', signedUrl);
+      
+      console.log('Generated print service URL:', printServiceUrl.toString());
+      res.json({ printServiceUrl: printServiceUrl.toString() });
 
       // Schedule cleanup of temporary file and S3 object
       setTimeout(async () => {
