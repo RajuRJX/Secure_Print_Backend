@@ -8,8 +8,8 @@
     "dev": "nodemon src/index.js",
     "migrate": "knex migrate:latest",
     "migrate:rollback": "knex migrate:rollback",
-    "build": "npm install && npm run migrate",
-    "postinstall": "npm run migrate"
+    "build": "npm install",
+    "postinstall": "node -e \"try { require('knex')(require('./knexfile.js')[process.env.NODE_ENV || 'production']).migrate.latest().then(() => process.exit(0)).catch(err => { console.error('Migration failed:', err); process.exit(1); }); } catch(err) { console.error('Migration setup failed:', err); process.exit(1); }\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.0.0",
