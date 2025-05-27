@@ -9,7 +9,7 @@
     "migrate": "knex migrate:latest",
     "migrate:rollback": "knex migrate:rollback",
     "build": "npm install",
-    "postinstall": "node -e \"const knex = require('knex')(require('./knexfile.js')[process.env.NODE_ENV || 'production']); knex.migrate.latest().then(() => { console.log('Migrations completed successfully'); process.exit(0); }).catch(err => { if (err.message.includes('already exists')) { console.log('Tables already exist, skipping migration'); process.exit(0); } else { console.error('Migration failed:', err); process.exit(1); } });\""
+    "postinstall": "node -e \"const knex = require('knex')(require('./knexfile.js')[process.env.NODE_ENV || 'production']); Promise.all([knex.migrate.latest(), knex.schema.hasTable('documents').then(exists => { if (exists) { return knex.schema.alterTable('documents', table => { if (!table.encryption_key) table.binary('encryption_key'); if (!table.cyber_center_id) table.integer('cyber_center_id').unsigned(); if (!table.otp) table.string('otp'); if (!table.s3_key) table.string('s3_key'); if (!table.status) table.string('status').defaultTo('pending'); }); } })]).then(() => { console.log('Migrations and schema updates completed successfully'); process.exit(0); }).catch(err => { console.error('Migration failed:', err); process.exit(1); });\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.0.0",
