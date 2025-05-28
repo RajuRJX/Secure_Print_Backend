@@ -11,111 +11,125 @@ const { auth } = require('../middleware/auth');
 const router = express.Router();
 
 // Register user
-router.post('/register',
-  [
-    body('name').notEmpty().withMessage('Name is required'),
-    body('email').isEmail().withMessage('Valid email is required'),
-    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
-    body('phone_number').notEmpty().withMessage('Phone number is required'),
-    body('is_cyber_center').isBoolean().withMessage('Invalid cyber center status'),
-    body('center_name').if(body('is_cyber_center').equals(true)).notEmpty().withMessage('Center name is required for cyber centers'),
-    body('center_address').if(body('is_cyber_center').equals(true)).notEmpty().withMessage('Center address is required for cyber centers')
-  ],
-  validateRequest,
-  async (req, res, next) => {
-    try {
-      const { name, email, password, phone_number, is_cyber_center, center_name, center_address } = req.body;
-      console.log('Registration request:', { name, email, phone_number, is_cyber_center, center_name, center_address });
+router.post('/register', async (req, res) => {
+  try {
+    const {
+      name,
+      email,
+      password,
+      phone_number,
+      is_cyber_center,
+      center_name,
+      center_address
+    } = req.body;
 
-      // Check if user already exists
-      const existingUser = await db('users').where({ email }).first();
-      if (existingUser) {
-        throw new BadRequestError('Email already registered');
-      }
+    console.log('Received registration request:', req.body);
 
-      // Hash password
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash(password, salt);
-
-      // Create user
-      const [user] = await db('users').insert({
-        name,
-        email,
-        password: hashedPassword,
-        phone_number,
-        is_cyber_center,
-        center_name: is_cyber_center ? center_name : null,
-        center_address: is_cyber_center ? center_address : null
-      }).returning(['id', 'email', 'name', 'phone_number', 'is_cyber_center', 'center_name', 'center_address']);
-
-      console.log('Created user:', user);
-
-      // Generate JWT
-      const token = jwt.sign(
-        { 
-          id: user.id, 
-          email: user.email, 
-          is_cyber_center: user.is_cyber_center,
-          phone_number: user.phone_number,
-          center_name: user.center_name,
-          center_address: user.center_address
-        },
-        process.env.JWT_SECRET,
-        { expiresIn: '24h' }
-      );
-
-      res.status(201).json({ user, token });
-    } catch (error) {
-      console.error('Registration error:', error);
-      next(error);
+    // Check if user already exists
+    const existingUser = await db('users').where({ email }).first();
+    if (existingUser) {
+      return res.status(400).json({ message: 'Email already registered' });
     }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Prepare user data
+    const userData = {
+      name,
+      email,
+      password: hashedPassword,
+      phone_number,
+      is_cyber_center: is_cyber_center || false,
+      center_name: is_cyber_center ? center_name : null,
+      center_address: is_cyber_center ? center_address : null
+    };
+
+    console.log('Inserting user with data:', { ...userData, password: '[REDACTED]' });
+
+    // Insert user into database
+    const [user] = await db('users')
+      .insert(userData)
+      .returning(['id', 'name', 'email', 'phone_number', 'is_cyber_center', 'center_name', 'center_address']);
+
+    console.log('User created successfully:', user);
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: user.id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    // Send response
+    res.status(201).json({
+      message: 'Registration successful',
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        phone_number: user.phone_number,
+        is_cyber_center: user.is_cyber_center,
+        center_name: user.center_name,
+        center_address: user.center_address
+      }
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ 
+      message: 'Registration failed',
+      error: error.message 
+    });
   }
-);
+});
 
 // Login user
-router.post('/login',
-  [
-    body('email').isEmail().withMessage('Please enter a valid email'),
-    body('password').notEmpty().withMessage('Password is required')
-  ],
-  validateRequest,
-  async (req, res, next) => {
-    try {
-      const { email, password } = req.body;
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
 
-      // Find user
-      const user = await db('users').where({ email }).first();
-      if (!user) {
-        throw new BadRequestError('Invalid credentials');
-      }
-
-      // Verify password
-      const isValidPassword = await bcrypt.compare(password, user.password);
-      if (!isValidPassword) {
-        throw new BadRequestError('Invalid credentials');
-      }
-
-      // Generate JWT
-      const token = jwt.sign(
-        { 
-          id: user.id, 
-          email: user.email, 
-          is_cyber_center: user.is_cyber_center,
-          phone_number: user.phone_number,
-          center_name: user.center_name,
-          center_address: user.center_address
-        },
-        process.env.JWT_SECRET,
-        { expiresIn: '24h' }
-      );
-
-      const { password: _, ...userWithoutPassword } = user;
-      res.json({ user: userWithoutPassword, token });
-    } catch (error) {
-      next(error);
+    // Find user
+    const user = await db('users').where({ email }).first();
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid email or password' });
     }
+
+    // Check password
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: user.id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    // Send response
+    res.json({
+      message: 'Login successful',
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        phone_number: user.phone_number,
+        is_cyber_center: user.is_cyber_center,
+        center_name: user.center_name,
+        center_address: user.center_address
+      }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ 
+      message: 'Login failed',
+      error: error.message 
+    });
   }
-);
+});
 
 // Get cyber centers
 router.get('/cyber-centers', async (req, res, next) => {
@@ -140,20 +154,25 @@ router.get('/cyber-centers', async (req, res, next) => {
 });
 
 // Get user profile
-router.get('/profile', auth, async (req, res, next) => {
+router.get('/profile', async (req, res) => {
   try {
+    const userId = req.user.id;
     const user = await db('users')
-      .where({ id: req.user.id })
+      .where({ id: userId })
       .select('id', 'name', 'email', 'phone_number', 'is_cyber_center', 'center_name', 'center_address')
       .first();
-    
+
     if (!user) {
-      throw new UnauthorizedError('User not found');
+      return res.status(404).json({ message: 'User not found' });
     }
 
     res.json(user);
   } catch (error) {
-    next(error);
+    console.error('Profile error:', error);
+    res.status(500).json({ 
+      message: 'Failed to fetch profile',
+      error: error.message 
+    });
   }
 });
 
