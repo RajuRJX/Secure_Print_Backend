@@ -10,6 +10,7 @@ const twilio = require('twilio');
 const bcrypt = require('bcrypt');
 const { generateKey, encrypt, decrypt } = require('../utils/encryption');
 const fs = require('fs');
+const { sendOTPEmail } = require('../services/email');
 
 // Initialize Twilio client
 const twilioClient = twilio(
@@ -72,6 +73,7 @@ router.post('/upload', auth, upload.single('document'), async (req, res) => {
 
     // Generate OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
 
     // Generate encryption key and encrypt file
     const encryptionKey = generateKey();
@@ -93,19 +95,22 @@ router.post('/upload', auth, upload.single('document'), async (req, res) => {
       file_name: req.file.originalname,
       s3_key: key,
       otp,
+      otp_expires_at: otpExpiresAt,
       status: 'pending',
       encryption_key: encryptionKey
     }).returning('*');
 
-    // Send OTP to the user who uploaded the document
-    await twilioClient.messages.create({
-      body: `Your OTP for document ${req.file.originalname} is: ${otp}. Please provide this OTP to the cyber center to print your document.`,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: req.user.phone_number
-    });
+    // Get user info
+    const user = await db('users').where({ id: req.user.id }).first();
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
 
-    res.json({ 
-      message: 'Document uploaded successfully',
+    // Send OTP via email to the user's email
+    await sendOTPEmail(user.email, otp);
+
+    res.status(201).json({
+      message: 'Document uploaded successfully. Please check your email for OTP.',
       document_id: document.id
     });
   } catch (error) {
