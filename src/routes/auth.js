@@ -88,22 +88,31 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
+    console.log('Login attempt for email:', email);
 
     // Find user
     const user = await db('users').where({ email }).first();
     if (!user) {
+      console.log('User not found for email:', email);
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
     // Check password
     const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) {
+      console.log('Invalid password for user:', email);
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
+    console.log('Login successful for user:', email);
+
     // Generate JWT token
     const token = jwt.sign(
-      { id: user.id, email: user.email },
+      { 
+        id: user.id, 
+        email: user.email,
+        is_cyber_center: user.is_cyber_center 
+      },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -154,18 +163,21 @@ router.get('/cyber-centers', async (req, res, next) => {
 });
 
 // Get user profile
-router.get('/profile', async (req, res) => {
+router.get('/profile', auth, async (req, res) => {
   try {
-    const userId = req.user.id;
+    console.log('Fetching profile for user ID:', req.user.id);
+    
     const user = await db('users')
-      .where({ id: userId })
+      .where({ id: req.user.id })
       .select('id', 'name', 'email', 'phone_number', 'is_cyber_center', 'center_name', 'center_address')
       .first();
 
     if (!user) {
+      console.log('User not found for ID:', req.user.id);
       return res.status(404).json({ message: 'User not found' });
     }
 
+    console.log('Profile fetched successfully:', user);
     res.json(user);
   } catch (error) {
     console.error('Profile error:', error);
