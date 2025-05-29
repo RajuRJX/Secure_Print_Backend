@@ -56,7 +56,12 @@ router.post('/register', async (req, res) => {
 
     // Generate JWT token
     const token = jwt.sign(
-      { id: user.id, email: user.email },
+      { 
+        id: user.id, 
+        email: user.email,
+        is_cyber_center: user.is_cyber_center,
+        name: user.name
+      },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -91,7 +96,11 @@ router.post('/login', async (req, res) => {
     console.log('Login attempt for email:', email);
 
     // Find user
-    const user = await db('users').where({ email }).first();
+    const user = await db('users')
+      .where({ email })
+      .select('id', 'name', 'email', 'password', 'phone_number', 'is_cyber_center', 'center_name', 'center_address')
+      .first();
+
     if (!user) {
       console.log('User not found for email:', email);
       return res.status(401).json({ message: 'Invalid email or password' });
@@ -104,14 +113,19 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
-    console.log('Login successful for user:', email);
+    console.log('Login successful for user:', {
+      id: user.id,
+      name: user.name,
+      email: user.email
+    });
 
     // Generate JWT token
     const token = jwt.sign(
       { 
         id: user.id, 
         email: user.email,
-        is_cyber_center: user.is_cyber_center 
+        is_cyber_center: user.is_cyber_center,
+        name: user.name
       },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }

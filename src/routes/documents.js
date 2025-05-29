@@ -71,6 +71,31 @@ router.post('/upload', auth, upload.single('document'), async (req, res) => {
       return res.status(400).json({ message: 'Cyber centers cannot upload documents' });
     }
 
+    // Get user info first
+    console.log('JWT User data:', req.user);
+    
+    const user = await db('users')
+      .where({ id: req.user.id })
+      .select('id', 'name', 'email', 'phone_number')
+      .first();
+    
+    if (!user) {
+      console.error('User not found in database for ID:', req.user.id);
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    console.log('User data from database:', {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone_number: user.phone_number
+    });
+
+    if (!user.name) {
+      console.error('User name is missing for user ID:', user.id);
+      return res.status(400).json({ error: 'User name is required' });
+    }
+
     // Generate OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const otpExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
@@ -89,22 +114,51 @@ router.post('/upload', auth, upload.single('document'), async (req, res) => {
     }));
 
     // Save document info to database
-    const [document] = await db('documents').insert({
-      user_id: req.user.id,
+    const documentData = {
       cyber_center_id,
       file_name: req.file.originalname,
       s3_key: key,
       otp,
       otp_expires_at: otpExpiresAt,
       status: 'pending',
-      encryption_key: encryptionKey
-    }).returning('*');
+      encryption_key: encryptionKey,
+      uploaded_by_name: user.name,
+      uploaded_by_email: user.email,
+      uploaded_by_phone: user.phone_number
+    };
 
-    // Get user info
-    const user = await db('users').where({ id: req.user.id }).first();
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    console.log('Attempting to save document with data:', {
+      ...documentData,
+      encryption_key: '[REDACTED]'
+    });
+
+    // Log the SQL query that will be executed
+    const query = db('documents')
+      .insert(documentData)
+      .returning('*')
+      .toString();
+    console.log('SQL Query:', query);
+
+    const [document] = await db('documents')
+      .insert(documentData)
+      .returning('*');
+
+    console.log('Saved document data:', {
+      id: document.id,
+      uploaded_by_name: document.uploaded_by_name,
+      file_name: document.file_name,
+      cyber_center_id: document.cyber_center_id
+    });
+
+    // Verify the document was saved correctly
+    const savedDocument = await db('documents')
+      .where({ id: document.id })
+      .first();
+    console.log('Verified saved document:', {
+      id: savedDocument.id,
+      uploaded_by_name: savedDocument.uploaded_by_name,
+      file_name: savedDocument.file_name
+    });
 
     // Send OTP via email to the user's email
     await sendOTPEmail(user.email, otp);
@@ -157,9 +211,10 @@ router.get('/center-documents', auth, async (req, res) => {
         'documents.status',
         'documents.created_at',
         'documents.otp',
-        'users.name as uploaded_by'
+        'documents.uploaded_by_name',
+        'documents.uploaded_by_email',
+        'documents.uploaded_by_phone'
       )
-      .leftJoin('users', 'documents.user_id', 'users.id')
       .orderBy('documents.created_at', 'desc');
     
     console.log('Found documents:', documents);
@@ -292,10 +347,10 @@ router.post('/direct-upload/:centerId', upload.single('document'), async (req, r
     }
 
     const { centerId } = req.params;
-    const { name, phone_number } = req.body;
+    const { name, phone_number, email } = req.body;
 
-    if (!name || !phone_number) {
-      return res.status(400).json({ message: 'Name and phone number are required' });
+    if (!name || !phone_number || !email) {
+      return res.status(400).json({ message: 'Name, phone number, and email are required' });
     }
 
     // Check if cyber center exists
@@ -332,15 +387,25 @@ router.post('/direct-upload/:centerId', upload.single('document'), async (req, r
       status: 'pending',
       uploaded_by_name: name,
       uploaded_by_phone: phone_number,
+      uploaded_by_email: email,
       encryption_key: encryptionKey
     }).returning('*');
 
-    // Send OTP to the user who uploaded the document
-    await twilioClient.messages.create({
-      body: `Your OTP for document ${req.file.originalname} is: ${otp}. Please provide this OTP to the cyber center to print your document.`,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: phone_number
-    });
+    // Send OTP to both email and phone
+    try {
+      // Send OTP via email
+      await sendOTPEmail(email, otp);
+      
+      // Send OTP via SMS
+      await twilioClient.messages.create({
+        body: `Your OTP for document ${req.file.originalname} is: ${otp}. Please provide this OTP to the cyber center to print your document.`,
+        from: process.env.TWILIO_PHONE_NUMBER,
+        to: phone_number
+      });
+    } catch (error) {
+      console.error('Error sending OTP:', error);
+      // Continue with the response even if sending OTP fails
+    }
 
     res.json({ 
       message: 'Document uploaded successfully',
