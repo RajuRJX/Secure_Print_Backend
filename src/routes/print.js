@@ -216,12 +216,21 @@ router.post('/verify',
           status: 'printed'
         });
 
-      // Construct print service URL with proper encoding
-      const printServiceUrl = new URL('/print', process.env.PRINT_SERVICE_URL);
-      printServiceUrl.searchParams.set('url', signedUrl);
-      
-      console.log('Generated print service URL:', printServiceUrl.toString());
-      res.json({ printServiceUrl: printServiceUrl.toString() });
+      // Return document data for preview
+      res.json({
+        success: true,
+        document: {
+          id: document.id,
+          fileName: document.file_name,
+          previewUrl: signedUrl,
+          contentType: document.file_name.endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          uploadedBy: {
+            name: document.uploaded_by_name,
+            email: document.uploaded_by_email,
+            phone: document.uploaded_by_phone
+          }
+        }
+      });
 
       // Schedule cleanup of temporary file and S3 object
       setTimeout(async () => {
@@ -358,6 +367,55 @@ router.post('/process', upload.single('file'), async (req, res) => {
   } catch (error) {
     console.error('Processing error:', error);
     res.status(500).json({ message: 'Failed to process document' });
+  }
+});
+
+// Serve document for printing
+router.get('/document/:id', auth, isCyberCenter, async (req, res, next) => {
+  let tempFilePath;
+  try {
+    const { id } = req.params;
+    const document = await db('documents')
+      .where({ id })
+      .first();
+
+    if (!document) {
+      throw new BadRequestError('Document not found');
+    }
+
+    // Fetch encrypted file from S3
+    const command = new GetObjectCommand({
+      Bucket: process.env.AWS_BUCKET_NAME,
+      Key: document.s3_key
+    });
+
+    const response = await s3Client.send(command);
+    const encryptedData = await response.Body.transformToByteArray();
+    
+    // Decrypt the file
+    const decryptedData = decrypt(Buffer.from(encryptedData), document.encryption_key);
+
+    // Set appropriate content type and headers
+    const contentType = document.file_name.endsWith('.pdf') 
+      ? 'application/pdf' 
+      : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    // Send the decrypted file
+    res.send(decryptedData);
+
+  } catch (error) {
+    console.error('Error serving document:', error);
+    next(error);
   }
 });
 
